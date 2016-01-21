@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from pprint import pprint
 import tempfile
 import logging
 import os
@@ -15,12 +16,6 @@ from dlstats.fetchers._commons import Fetcher, Datasets, Providers
 
 
 logger = logging.getLogger(__name__)
-fmt = logging.Formatter('%(asctime)s %(message)s')
-fh = logging.FileHandler("wbapi.log")
-fh.setFormatter(fmt)
-logger.setLevel(logging.DEBUG)
-fh.setLevel(logging.DEBUG)
-logger.addHandler(fh)
 
 VERSION = 1
 
@@ -37,7 +32,7 @@ def key_yearly(point):
 
 class WorldBankAPI(Fetcher):
     def __init__(self, db=None):
-        super().__init__(provider_name='WorldBank',  db=db)
+        super().__init__(provider_name='WB2',  db=db)
         self.provider = Providers(name=self.provider_name,
                                  long_name='World Bank',
                                  version=VERSION,
@@ -135,6 +130,7 @@ class WorldBankAPI(Fetcher):
 
 
 class WorldBankAPIData(object):
+
     def __init__(self, dataset):
         self.dataset = dataset
         self.fetcher = self.dataset.fetcher
@@ -153,17 +149,20 @@ class WorldBankAPIData(object):
     def __next__(self):
         #TODO: Check for NaNs
         series = {}
-        if self.countries_to_process == []:
-            if self.series_to_process == []:
+
+        if not self.countries_to_process:
+            if not self.series_to_process:
                 raise StopIteration()
             self.countries_to_process = list(self.fetcher.available_countries.keys())
             self.current_series = self.series_to_process.pop()
+
         self.current_country = self.countries_to_process.pop()
         logger.debug("Fetching the series {0} for the country {1}"
                      .format(self.current_series, self.current_country))
         # Only retrieve the first page to get more information about the series
         indicator = self.fetcher.download_indicator(self.current_country,
                                                     self.current_series)
+
         dates_and_values = []
         dates = []
         has_page = False
@@ -185,14 +184,23 @@ class WorldBankAPIData(object):
         for page in indicator:
             for point in page:
                 dates_and_values.append((point['date'],point['value']))
+
+        series['dates_and_values'] = dates_and_values
+        return self.build_series(series)
+
+    def build_series(self, series):
+
+        dates_and_values = series.pop('dates_and_values')
+
         if series['frequency'] == 'A':
             key_function = key_yearly
         elif series['frequency'] == 'M':
             key_function = key_monthly
+
         dates_and_values = sorted(dates_and_values, key=key_function)
         series['provider_name'] = self.provider_name
         series['dataset_code'] = self.dataset_code
-        series['key'] = self.current_series + '.' + self.current_country
+        series['key'] = "%s.%s" % (self.current_series, self.current_country)
         series['values'] = [point[1] or 'NaN' for point in dates_and_values]
         series['start_date'] = pandas.Period(dates_and_values[0][0],
                                             freq=series['frequency']).ordinal
@@ -200,9 +208,34 @@ class WorldBankAPIData(object):
                                           freq=series['frequency']).ordinal
         series['attributes'] = {}
         series['dimensions'] = {'country': self.current_country}
+
+        #pprint(series)
+
         return series
 
 
 if __name__ == "__main__":
+
+    logging.basicConfig(level=logging.DEBUG,
+                        filename="wbapi.log",
+                        #filemode="w+",
+                        format='line:%(lineno)d - %(asctime)s %(name)s: [%(levelname)s] - [%(process)d] - [%(module)s] - %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S')
+
+    import sys
+    import os
+    import tempfile
+    print("WARNING : run main for testing only", file=sys.stderr)
+    try:
+        import requests_cache
+        cache_filepath = os.path.abspath(os.path.join(tempfile.gettempdir(), 'dlstats_cache'))
+        requests_cache.install_cache(cache_filepath, backend='sqlite', expire_after=None)#=60 * 60) #1H
+        print("requests cache in %s" % cache_filepath)
+    except ImportError:
+        pass
+
     wb = WorldBankAPI()
+    for d in wb.datasets_long_list():
+        print(d)
+
     wb.upsert_dataset('15')
