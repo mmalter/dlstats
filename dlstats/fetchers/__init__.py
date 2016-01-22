@@ -89,3 +89,10 @@ try:
     __all__.append('FED')
 except ImportError:
     pass
+
+try:
+    from dlstats.fetchers.esri import Esri
+    FETCHERS['Esri'] = Esri
+    __all__.append('Esri')
+except ImportError:
+    pass
