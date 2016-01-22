@@ -86,16 +86,16 @@ class IMF(Fetcher):
         if self.provider.version != VERSION:
             self.provider.update_database
 
-    def upsert_all_datasets(self):
+    def load_datasets_first(self):
         start = time.time()
-        logger.info("update fetcher[%s] - START" % (self.provider_name))
+        logger.info("first load fetcher[%s] - START" % (self.provider_name))
         
         for dataset_code in DATASETS.keys():
             self.upsert_dataset(dataset_code) 
 
         end = time.time() - start
-        logger.info("update fetcher[%s] - END - time[%.3f seconds]" % (self.provider_name, end))
-        
+        logger.info("first load fetcher[%s] - END - time[%.3f seconds]" % (self.provider_name, end))
+
     def upsert_dataset(self, dataset_code):
         start = time.time()
         logger.info("upsert dataset[%s] - START" % (dataset_code))
