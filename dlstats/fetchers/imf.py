@@ -71,15 +71,20 @@ def download(url, filename=None):
 
 class IMF(Fetcher):
 
-    def __init__(self, db=None, **kwargs):        
-        super().__init__(provider_name='IMF', db=db, **kwargs)
+    def __init__(self, db=None):
+        super().__init__(provider_name='IMF', db=db)
         
-        self.provider = Providers(name=self.provider_name, 
-                                  long_name="International Monetary Fund",
-                                  version=VERSION, 
-                                  region='world', 
-                                  website='http://www.imf.org/', 
-                                  fetcher=self)
+        if not self.provider:
+            self.provider = Providers(name=self.provider_name,
+                                      long_name="International Monetary Fund",
+                                      version=VERSION,
+                                      region='world',
+                                      website='http://www.imf.org/',
+                                      fetcher=self)
+            self.provider.update_database()
+
+        if self.provider.version != VERSION:
+            self.provider.update_database
 
     def upsert_all_datasets(self):
         start = time.time()
@@ -159,14 +164,18 @@ class IMF(Fetcher):
         except Exception as err:
             logger.error(str(err))
 
-    def upsert_categories(self):
-        data_tree = {'name': 'IMF',
-                     'category_code': 'imf_root',
-                     'children': [{'name': 'WEO' , 
-                                   'category_code': 'WEO',
-                                   'exposed': True,
-                                   'children': []}]}
-        self.provider.add_data_tree(data_tree)
+    def build_data_tree(self):
+
+        if self.provider.count_data_tree() > 1 and not force_update:
+            return self.provider.data_tree
+
+        category_key = self.provider.add_category({'name': 'IMF',
+                                                   'category_code': 'imf_root',
+                                                  })
+
+        for category_code, dataset in DATASETS.items():
+            _dataset = {"name": dataset["name"], "dataset_code": category_code}
+            self.provider.add_dataset(_dataset, category_key)
         
 class WeoData():
     
@@ -268,7 +277,3 @@ if __name__ == "__main__":
         pass
     
     w = IMF()
-    w.provider.update_database()
-    w.upsert_categories()
-    w.upsert_all_datasets()
-     
