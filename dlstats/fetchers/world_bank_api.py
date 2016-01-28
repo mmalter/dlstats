@@ -30,6 +30,24 @@ def key_yearly(point):
     string_year = point[0]
     return int(string_year)
 
+def retry(tries):
+    """Retry calling the decorated function
+    :param tries: number of times to try
+    :type tries: int
+    """
+    def try_it(func):
+        def f(*args,**kwargs):
+            attempts = 0
+            while True:
+                try:
+                    return func(*args,**kwargs)
+                except Exception as e:
+                    attempts += 1
+                    if attempts > tries:
+                        raise e
+        return f
+    return try_it
+
 class WorldBankAPI(Fetcher):
     def __init__(self, db=None):
         super().__init__(provider_name='WB2',  db=db)
@@ -39,19 +57,29 @@ class WorldBankAPI(Fetcher):
                                  region='world',
                                  website='http://www.worldbank.org/',
                                  fetcher=self)
+        self.provider.update_database()
         self.api_url = 'http://api.worldbank.org/'
         self.requests_client = requests.Session()
+        self.blacklist = {'15': ['TOT']}
+
+    @retry(1)
+    def download_or_raise(self, url, params={}):
+        request = self.requests_client.get(url, params=params)
+        request.raise_for_status()
+        return request
 
     def download_json(self, url, parameters={}):
         per_page = 30000
         payload = {'format': 'json', 'per_page': per_page}
         payload.update(parameters)
-        request = self.requests_client.get(self.api_url + url, params=payload)
+        request = self.download_or_raise(self.api_url + url, params=payload)
         first_page = request.json()
         number_of_pages = int(first_page[0]['pages'])
         for page in range(1,number_of_pages+1):
-            payload = {'format': 'json', 'per_page': per_page, 'page': page}
-            request = self.requests_client.get(self.api_url + url, params=payload)
+            if page != 1:
+                payload = {'format': 'json', 'per_page': per_page, 'page': page}
+                request = self.download_or_raise(self.api_url + url, params=payload)
+                request.raise_for_status()
             yield request.json()[1]
 
     def download_indicator(self, country_code, indicator_code):
@@ -96,11 +124,13 @@ class WorldBankAPI(Fetcher):
 
         if self.provider.count_data_tree() > 1 and not force_update:
             return self.provider.data_tree
-        for source in self.datasets_long_list:
-            self.provider.add_category({'name': source[1],
-                                        'category_code': source[0]})
-            self.provider.add_dataset({'name': source[1],
-                                       'dataset_code': source[0]})
+        for source in self.datasets_long_list():
+            category_key = self.provider.add_category({'name': source[1],
+                                                       'category_code': source[0]})
+            self.provider.add_dataset(
+                {'name': source[1],'dataset_code': source[0]},
+                category_key
+            )
 
     def upsert_dataset(self, dataset_code):
         start = time.time()
@@ -116,9 +146,11 @@ class WorldBankAPI(Fetcher):
                            last_update=datetime.datetime.now(),
                            fetcher=self)
         dataset.series.data_iterator = WorldBankAPIData(dataset)
-        dataset.update_database()
+        result = dataset.update_database()
         end = time.time() - start
         logger.info("upsert dataset[%s] - END - time[%.3f seconds]" % (dataset_code, end))
+
+        return result
 
     def load_datasets_first(self):
         start = time.time()
@@ -132,6 +164,7 @@ class WorldBankAPI(Fetcher):
 class WorldBankAPIData(object):
 
     def __init__(self, dataset):
+        self.i=0
         self.dataset = dataset
         self.fetcher = self.dataset.fetcher
         self.dimension_list = dataset.dimension_list
@@ -140,7 +173,9 @@ class WorldBankAPIData(object):
         self.dimension_list.set_dict(dimension_list)
         self.dataset_code = self.dataset.dataset_code
         self.provider_name = self.fetcher.provider_name
-        self.series_to_process = self.fetcher.series_list(self.dataset_code) 
+        self.blacklisted_indicators = self.fetcher.blacklist[self.dataset_code]
+        self.series_listed = self.fetcher.series_list(self.dataset_code) 
+        self.series_to_process = list(set(self.series_listed) - set(self.blacklisted_indicators))
         self.countries_to_process = []
 
     def __iter__(self):
@@ -154,6 +189,7 @@ class WorldBankAPIData(object):
             if not self.series_to_process:
                 raise StopIteration()
             self.countries_to_process = list(self.fetcher.available_countries.keys())
+            print(self.series_to_process)
             self.current_series = self.series_to_process.pop()
 
         self.current_country = self.countries_to_process.pop()
@@ -201,6 +237,7 @@ class WorldBankAPIData(object):
         series['provider_name'] = self.provider_name
         series['dataset_code'] = self.dataset_code
         series['key'] = "%s.%s" % (self.current_series, self.current_country)
+        series['name'] = series['key']
         series['values'] = [point[1] or 'NaN' for point in dates_and_values]
         series['start_date'] = pandas.Period(dates_and_values[0][0],
                                             freq=series['frequency']).ordinal
@@ -210,6 +247,8 @@ class WorldBankAPIData(object):
         series['dimensions'] = {'country': self.current_country}
 
         #pprint(series)
+        self.i += 1
+        print(self.i)
 
         return series
 
@@ -235,7 +274,8 @@ if __name__ == "__main__":
         pass
 
     wb = WorldBankAPI()
-    for d in wb.datasets_long_list():
-        print(d)
+    #for d in wb.datasets_long_list():
+        #print(d)
 
+    #wb.build_data_tree()
     wb.upsert_dataset('15')
