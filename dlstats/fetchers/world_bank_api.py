@@ -61,6 +61,7 @@ class WorldBankAPI(Fetcher):
         self.api_url = 'http://api.worldbank.org/'
         self.requests_client = requests.Session()
         self.blacklist = {'15': ['TOT']}
+        self.whitelist = ['1', '15']
 
     @retry(1)
     def download_or_raise(self, url, params={}):
@@ -173,7 +174,9 @@ class WorldBankAPIData(object):
         self.dimension_list.set_dict(dimension_list)
         self.dataset_code = self.dataset.dataset_code
         self.provider_name = self.fetcher.provider_name
-        self.blacklisted_indicators = self.fetcher.blacklist[self.dataset_code]
+        self.blacklisted_indicators = []
+        if self.dataset_code in self.fetcher.blacklist:
+            self.blacklisted_indicators = self.fetcher.blacklist[self.dataset_code]
         self.series_listed = self.fetcher.series_list(self.dataset_code) 
         self.series_to_process = list(set(self.series_listed) - set(self.blacklisted_indicators))
         self.countries_to_process = []
@@ -278,4 +281,4 @@ if __name__ == "__main__":
         #print(d)
 
     #wb.build_data_tree()
-    wb.upsert_dataset('15')
+    wb.upsert_dataset('2')
