@@ -12,7 +12,7 @@ import pandas
 import requests
 from collections import OrderedDict
 from operator import itemgetter
-from dlstats.fetchers._commons import Fetcher, Datasets, Providers
+from dlstats.fetchers._commons import Fetcher, Datasets, Providers, SeriesIterator
 
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def key_yearly(point):
     string_year = point[0]
     return int(string_year)
 
-def retry(tries):
+def retry(tries=1, sleep_time=2):
     """Retry calling the decorated function
     :param tries: number of times to try
     :type tries: int
@@ -45,6 +45,7 @@ def retry(tries):
                     attempts += 1
                     if attempts > tries:
                         raise e
+                    time.sleep(sleep_time)
         return f
     return try_it
 
@@ -58,12 +59,12 @@ class WorldBankAPI(Fetcher):
                                  website='http://www.worldbank.org/',
                                  fetcher=self)
         self.provider.update_database()
-        self.api_url = 'http://api.worldbank.org/'
+        self.api_url = 'http://api.worldbank.org/v2/'
         self.requests_client = requests.Session()
         self.blacklist = {'15': ['TOT']}
         self.whitelist = ['1', '15']
 
-    @retry(1)
+    @retry(tries=2, sleep_time=2)
     def download_or_raise(self, url, params={}):
         request = self.requests_client.get(url, params=params)
         request.raise_for_status()
@@ -81,7 +82,7 @@ class WorldBankAPI(Fetcher):
                 payload = {'format': 'json', 'per_page': per_page, 'page': page}
                 request = self.download_or_raise(self.api_url + url, params=payload)
                 request.raise_for_status()
-            yield request.json()[1]
+            yield request.json()
 
     def download_indicator(self, country_code, indicator_code):
         for page in self.download_json('/'.join(['countries',
@@ -93,14 +94,14 @@ class WorldBankAPI(Fetcher):
     def datasets_list(self):
         output = []
         for page in self.download_json('sources'):
-            for source in page:
+            for source in page[1]:
                 output.append(source['id'])
         return output
 
     def datasets_long_list(self):
         output = []
         for page in self.download_json('sources'):
-            for source in page:
+            for source in page[1]:
                 output.append((source['id'], source['name']))
         return output
 
@@ -108,7 +109,7 @@ class WorldBankAPI(Fetcher):
     def available_countries(self):
         output = OrderedDict()
         for page in self.download_json('countries'):
-            for source in page:
+            for source in page[1]:
                 output[source['id']] = source['name']
         return output
 
@@ -117,21 +118,20 @@ class WorldBankAPI(Fetcher):
         for page in self.download_json('/'.join(['sources',
                                                  dataset_code,
                                                  'indicators'])):
-            for source in page:
+            for source in page[1]:
                 output.append(source['id'])
         return output
 
     def build_data_tree(self, force_update=False):
 
-        if self.provider.count_data_tree() > 1 and not force_update:
-            return self.provider.data_tree
+        categories = []
         for source in self.datasets_long_list():
-            category_key = self.provider.add_category({'name': source[1],
-                                                       'category_code': source[0]})
-            self.provider.add_dataset(
-                {'name': source[1],'dataset_code': source[0]},
-                category_key
-            )
+            categories.append({'name': source[1],
+                               'category_code': source[0],
+                               'datasets': [{'name': source[1],
+                                             'dataset_code': source[0]}]})
+
+        return categories
 
     def upsert_dataset(self, dataset_code):
         start = time.time()
@@ -162,7 +162,7 @@ class WorldBankAPI(Fetcher):
         logger.info("first load fetcher[%s] - END - time[%.3f seconds]" % (self.provider_name, end))
 
 
-class WorldBankAPIData(object):
+class WorldBankAPIData(SeriesIterator):
 
     def __init__(self, dataset):
         self.i=0
@@ -192,7 +192,6 @@ class WorldBankAPIData(object):
             if not self.series_to_process:
                 raise StopIteration()
             self.countries_to_process = list(self.fetcher.available_countries.keys())
-            print(self.series_to_process)
             self.current_series = self.series_to_process.pop()
 
         self.current_country = self.countries_to_process.pop()
@@ -207,7 +206,8 @@ class WorldBankAPIData(object):
         has_page = False
         for page in indicator:
             has_page = True
-            for point in page:
+            self.release_date = page[0]['lastupdated']
+            for point in page[1]:
                 if len(point['date']) == 4:
                     series['frequency'] = 'A'
                 if len(point['date']) == 7:
@@ -221,7 +221,7 @@ class WorldBankAPIData(object):
         indicator = self.fetcher.download_indicator(self.current_country,
                                                     self.current_series)
         for page in indicator:
-            for point in page:
+            for point in page[1]:
                 dates_and_values.append((point['date'],point['value']))
 
         series['dates_and_values'] = dates_and_values
@@ -237,21 +237,33 @@ class WorldBankAPIData(object):
             key_function = key_monthly
 
         dates_and_values = sorted(dates_and_values, key=key_function)
+
+        values = []
+        for point in dates_and_values:
+            value = {
+                'attributes': None,
+                'release_date': datetime.datetime.strptime(self.release_date, '%Y-%m-%d'),
+                'value': str(point[1]) or 'NaN',
+                'ordinal': pandas.Period(point[0],
+                                         freq=series['frequency']).ordinal,
+                'period': point[0],
+                'period_o': point[0]
+            }
+            values.append(value)
+
         series['provider_name'] = self.provider_name
         series['dataset_code'] = self.dataset_code
         series['key'] = "%s.%s" % (self.current_series, self.current_country)
         series['name'] = series['key']
-        series['values'] = [point[1] or 'NaN' for point in dates_and_values]
+        series['values'] = values
         series['start_date'] = pandas.Period(dates_and_values[0][0],
                                             freq=series['frequency']).ordinal
         series['end_date'] = pandas.Period(dates_and_values[-1][0],
                                           freq=series['frequency']).ordinal
-        series['attributes'] = {}
+        series['attributes'] = None
         series['dimensions'] = {'country': self.current_country}
 
-        #pprint(series)
         self.i += 1
-        print(self.i)
 
         return series
 
@@ -281,4 +293,4 @@ if __name__ == "__main__":
         #print(d)
 
     #wb.build_data_tree()
-    wb.upsert_dataset('2')
+    wb.build_data_tree()
